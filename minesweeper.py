@@ -2,6 +2,7 @@ import pygame
 from pygame.locals import *
 from random import random
 from os import system, name
+import time
 
 # game setup
 FPS = 30
@@ -39,6 +40,7 @@ class Sim():
 
         self.focus_cell = None
         self.grid_view = False
+        self.verbose = False
 
     def setup(self):
         self.grid = Grid(self.gridSize, self.cellSize)
@@ -66,27 +68,25 @@ class Sim():
                     self.grid_view = not self.grid_view
                     print("grid view: " + str(self.grid_view))
                 elif event.key == K_d:
-                    #self.grid.draw_bombs()
-                    pass
+                    self.verbose = not self.verbose
+                    print("verbose mode: " + str(self.verbose))
+                elif event.key == K_t:
+                    print("current time: " + str(self.grid.get_time()))
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
-                    if cell.bomb:
+                    if not self.grid.reveal(cell):
+                        print("final time: " + str(self.grid.get_time()))
                         self.hasLost()
-                    else:
-                        if cell.bombs == 0:
-                            neighborhood = self.grid.get_zero_neighborhood(cell)
-                            self.grid.make_visible(neighborhood)
-                        else:
-                            self.grid.make_visible([cell])
                 elif event.button == 3:
-                    if not cell.visible: cell.flag = not cell.flag
+                    self.grid.flag(cell)
         self.focus_cell = cell
 
-    def wait(self, img, x, y):
+    def wait(self, img=None, x=0, y=0):
         pygame.event.clear()
         while True:
-            self.screen.blit(img, (x, y))
-            pygame.display.flip()
+            if img is not None:
+                self.screen.blit(img, (x, y))
+                pygame.display.flip()
             event = pygame.event.wait()
             if event.type == QUIT:
                 pygame.quit()
@@ -96,6 +96,7 @@ class Sim():
 
     def hasWon(self):
         if len(self.grid.bombs) >= self.grid.numNotVisible:
+            print("final time: " + str(self.grid.get_time()))
             font = pygame.font.SysFont('freesansbold.ttf', 72)
             img = font.render('You Won!', True, BLUE)
             x,y = self.size
@@ -122,7 +123,7 @@ class Sim():
 
 
 class Cell():
-    def __init__(self, pos, size, cellpos, bomb):
+    def __init__(self, pos, size, cellpos):
         self.hover_color = OFFWHITE
         self.box = pygame.Rect(pos, size)
         self.innerbox = pygame.Rect(pos, (int(size[0]//1.1), int(size[1]//1.1)))
@@ -131,7 +132,7 @@ class Cell():
         self.flagbox.center = self.box.center
         self.cellpos = cellpos
         self.flag = False
-        self.bomb = bomb
+        self.bomb = False
         self.bombs = 0
         self.text_surface_obj = None
         self.text_rect_obj = None
@@ -139,6 +140,8 @@ class Cell():
 
     def draw(self, screen):
         if self.flag and (self.bombs != -1 or not self.visible):
+            pygame.draw.rect(screen, CELL_OUTER, self.box)
+            pygame.draw.rect(screen, CELL_INNER, self.innerbox)
             pygame.draw.line(screen, RED, self.flagbox.topleft, self.flagbox.bottomright, 5)
             pygame.draw.line(screen, RED, self.flagbox.bottomleft, self.flagbox.topright, 5)
         else:
@@ -174,13 +177,12 @@ class Grid():
         for x in range(self.gridSize[0]):
             for y in range(self.gridSize[1]):
                 p = (x * cellSize[0], y * cellSize[1])
-                bomb = random() > 0.80
-                cell = Cell(p, cellSize, (x,y), bomb)
+                cell = Cell(p, cellSize, (x,y))
                 self.cells[(x, y)] = cell
-                if bomb: self.bombs.append(cell)
-        self.get_bombs()
         self.numNotVisible = len(self.cells)
-        self.numBombs = len(self.bombs)
+        self.numBombs = 0
+        self.flagsLeft = 0
+        self.startTime = time.time()
 
     def get_cell(self, pixel_pos):
         return self.cells[int(pixel_pos[0] / self.cellSize[0]), int(pixel_pos[1] / self.cellSize[1])]
@@ -213,7 +215,23 @@ class Grid():
                         neighbors += 1
         return neighbors
 
-    def get_bombs(self):
+    def get_bombs(self, clicked_cell):
+        clicked_cell_neighbors = []
+        pos = clicked_cell.cellpos
+        for i in range(-1,2):
+            for j in range(-1,2):
+                new_x = pos[0] + i
+                new_y = pos[1] + j
+                clicked_cell_neighbors.append((new_x,new_y))
+
+        for cell in self.cells.values():
+            bomb = random() > 0.70 and cell.cellpos not in clicked_cell_neighbors
+            if bomb:
+                cell.bomb = bomb
+                self.bombs.append(cell)
+        self.numBombs = len(self.bombs)
+        self.flagsLeft = self.numBombs
+
         colors = [BLACK, BLACK, BLUE, GREEN, RED, PURPLE, ORANGE, PINK, YELLOW, TURQUOISE]
         for cell in self.cells.values():
             cell.bombs = self.get_num_neighbors(cell)
@@ -223,6 +241,8 @@ class Grid():
                 cell.text_surface_obj = self.font_obj.render(str(cell.bombs), True, colors[cell.bombs+1])
             cell.text_rect_obj = cell.text_surface_obj.get_rect()
             cell.text_rect_obj.center = cell.box.center
+
+        print("flags left: " + str(len(self.bombs)))
 
     def get_zero_neighborhood(self, cell):
         queue = []
@@ -248,6 +268,7 @@ class Grid():
     def make_visible(self, cell_list):
         for cell in cell_list:
             if not cell.visible:
+                if cell.flag: self.flagsLeft += 1
                 self.numNotVisible -= 1
                 cell.visible = True
 
@@ -255,8 +276,32 @@ class Grid():
         for cell in self.bombs:
             cell.visible = not cell.visible
 
+    def flag(self, cell):
+        if not cell.visible:
+            if not cell.flag and self.flagsLeft > 0:
+                cell.flag = True
+                self.flagsLeft -= 1
+            elif cell.flag:
+                cell.flag = False
+                self.flagsLeft += 1
+            print("flags left: " + str(self.flagsLeft))
 
+    def reveal(self, cell):
+        if self.numBombs == 0:
+            print("generating bombs")
+            self.get_bombs(cell)
+        if not cell.flag:
+            if cell.bomb:
+                return False
+            if cell.bombs == 0:
+                neighborhood = self.get_zero_neighborhood(cell)
+                self.make_visible(neighborhood)
+            else:
+                self.make_visible([cell])
+        return True
 
+    def get_time(self):
+        return time.time() - self.startTime
 
 
 def main():
@@ -264,7 +309,7 @@ def main():
     clock = pygame.time.Clock()
     dt = 0
 
-    size = (20, 20)
+    size = (15, 15)
     sim = Sim(size)
 
     while True:
